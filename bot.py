@@ -11,9 +11,9 @@ bot = discord.Client(intents=intents)
 
 SLT_ZONE = pytz.timezone("America/Los_Angeles")
 
-# Matches the full date + time phrase right before SLT
-SLT_PATTERN = re.compile(
-    r"\b((?:(?:on|at|this|next)\s+)?(?:(?:\d{1,2}(?:st|nd|rd|th)?\s+(?:of\s+)?(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)|(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\s+\d{1,2}(?:st|nd|rd|th)?|mon(?:day)?|tue(?:sday)?|wed(?:nesday)?|thu(?:rsday)?|fri(?:day)?|sat(?:urday)?|sun(?:day)?)\s*,?\s*)?(?:1[0-2]|0?[1-9])(?::[0-5][0-9])?\s*(?:am|pm)?|(?:[01]?[0-9]|2[0-3]):[0-5][0-9])\s*slt\b",
+# Finds anything up to 50 characters long that ends with "SLT"
+SLT_CHUNK_PATTERN = re.compile(
+    r"(?:(?:\b[\w\s,.:/'-]{1,50}\b)?\b(?:1[0-2]|0?[1-9])(?::[0-5][0-9])?\s*(?:am|pm)?|(?:[01]?[0-9]|2[0-3]):[0-5][0-9])\s*slt\b",
     re.IGNORECASE,
 )
 
@@ -28,19 +28,27 @@ async def on_message(message):
     if message.author.bot:
         return
 
-    # finditer captures the entire matched string safely
-    matches = [m.group(0) for m in SLT_PATTERN.finditer(message.content)]
+    # Find potential time phrases ending in SLT
+    matches = SLT_CHUNK_PATTERN.findall(message.content)
 
     if matches:
         converted_times = []
         now_slt = datetime.now(SLT_ZONE)
 
         for match_str in matches:
-            # Strip off trailing SLT / slt for parsing
-            clean_time_str = re.sub(r"\s*slt\b", "", match_str, flags=re.IGNORECASE).strip()
+            # Clean off the "slt" label at the end
+            clean_str = re.sub(r"\s*slt\b", "", match_str, flags=re.IGNORECASE).strip()
+
+            # Clean out common prepositions at the start of matches if present
+            clean_str = re.sub(
+                r"^(?:will be|on|at|is|for|party|event)\s+",
+                "",
+                clean_str,
+                flags=re.IGNORECASE,
+            ).strip()
 
             parsed_dt = dateparser.parse(
-                clean_time_str,
+                clean_str,
                 settings={
                     "RELATIVE_BASE": now_slt.replace(tzinfo=None),
                     "PREFER_DATES_FROM": "future",
@@ -57,7 +65,9 @@ async def on_message(message):
                 )
 
         if converted_times:
-            response = "**SLT Time Conversion:**\n" + "\n".join(converted_times)
+            # Remove duplicate timestamp outputs if any overlap
+            unique_times = list(dict.fromkeys(converted_times))
+            response = "**SLT Time Conversion:**\n" + "\n".join(unique_times)
             await message.reply(response, mention_author=False)
 
 
