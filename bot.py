@@ -51,9 +51,9 @@ async def on_message(message):
                 localized_slt = SLT_ZONE.localize(parsed_dt)
                 unix_timestamp = int(localized_slt.timestamp())
 
-                # Output dynamic Discord timestamp
+                # Outputs dynamic Discord timestamp tag directly so everyone sees local time
                 converted_times.append(
-                    f"`{time_str.upper()}` ➔ <t:{unix_timestamp}:f> (<t:{unix_timestamp}:R>)"
+                    f"<t:{unix_timestamp}:f> (<t:{unix_timestamp}:R>)"
                 )
 
         if converted_times:
