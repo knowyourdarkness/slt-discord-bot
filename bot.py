@@ -11,10 +11,9 @@ bot = discord.Client(intents=intents)
 
 SLT_ZONE = pytz.timezone("America/Los_Angeles")
 
-# Expanded pattern to match dates, weekdays, or month names before the time
-# Matches: "9th September 2pm slt", "Sept 9 14:00 SLT", "Friday 8pm slt", or "2pm slt"
-TIME_REGEX = re.compile(
-    r"\b((?:(?:jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\s+\d{1,2}(?:st|nd|rd|th)?|\d{1,2}(?:st|nd|rd|th)?\s+(?:jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*|mon|tue|wed|thu|fri|sat|sun|monday|tuesday|wednesday|thursday|friday|saturday|sunday)?\s*(?:1[0-2]|0?[1-9])(?::[0-5][0-9])?\s*(?:am|pm)?|(?:[01]?[0-9]|2[0-3]):[0-5][0-9])\s*slt\b",
+# Matches the full date + time phrase right before SLT
+SLT_PATTERN = re.compile(
+    r"\b((?:(?:on|at|this|next)\s+)?(?:(?:\d{1,2}(?:st|nd|rd|th)?\s+(?:of\s+)?(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)|(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\s+\d{1,2}(?:st|nd|rd|th)?|mon(?:day)?|tue(?:sday)?|wed(?:nesday)?|thu(?:rsday)?|fri(?:day)?|sat(?:urday)?|sun(?:day)?)\s*,?\s*)?(?:1[0-2]|0?[1-9])(?::[0-5][0-9])?\s*(?:am|pm)?|(?:[01]?[0-9]|2[0-3]):[0-5][0-9])\s*slt\b",
     re.IGNORECASE,
 )
 
@@ -29,19 +28,19 @@ async def on_message(message):
     if message.author.bot:
         return
 
-    matches = TIME_REGEX.findall(message.content)
+    # finditer captures the entire matched string safely
+    matches = [m.group(0) for m in SLT_PATTERN.finditer(message.content)]
 
     if matches:
         converted_times = []
         now_slt = datetime.now(SLT_ZONE)
 
-        for time_str in matches:
-            cleaned_str = time_str.strip()
-            if not cleaned_str:
-                continue
+        for match_str in matches:
+            # Strip off trailing SLT / slt for parsing
+            clean_time_str = re.sub(r"\s*slt\b", "", match_str, flags=re.IGNORECASE).strip()
 
             parsed_dt = dateparser.parse(
-                cleaned_str,
+                clean_time_str,
                 settings={
                     "RELATIVE_BASE": now_slt.replace(tzinfo=None),
                     "PREFER_DATES_FROM": "future",
@@ -53,7 +52,6 @@ async def on_message(message):
                 localized_slt = SLT_ZONE.localize(parsed_dt)
                 unix_timestamp = int(localized_slt.timestamp())
 
-                # Uses full date format tag <t:TIMESTAMP:F> so date changes are clear
                 converted_times.append(
                     f"<t:{unix_timestamp}:F> (<t:{unix_timestamp}:R>)"
                 )
