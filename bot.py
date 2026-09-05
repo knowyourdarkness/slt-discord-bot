@@ -1,92 +1,73 @@
-const { Client, GatewayIntentBits } = require('discord.js');
+import os
+import re
+from datetime import datetime
+from dateparser.search import search_dates
+import discord
+import pytz
 
-const client = new Client({
-  intents: [
-    GatewayIntentBits.Guilds,
-    GatewayIntentBits.GuildMessages,
-    GatewayIntentBits.MessageContent,
-  ],
-});
+intents = discord.Intents.default()
+intents.message_content = True
+bot = discord.Client(intents=intents)
 
-// Helper function to safely parse SLT time into a Unix timestamp
-function parseSLTToUnix(targetHours, targetMinutes) {
-  const now = new Date();
-  
-  // Format current date in America/Los_Angeles timezone
-  const formatter = new Intl.DateTimeFormat('en-US', {
-    timeZone: 'America/Los_Angeles',
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit',
-    hour12: false,
-  });
+SLT_ZONE = pytz.timezone("America/Los_Angeles")
 
-  const parts = Object.fromEntries(
-    formatter.formatToParts(now).map((p) => [p.type, p.value])
-  );
 
-  const year = parseInt(parts.year, 10);
-  const month = parseInt(parts.month, 10) - 1;
-  const day = parseInt(parts.day, 10);
+@bot.event
+async def on_ready():
+    print(f"Logged in as {bot.user} - SLT Converter is active!")
 
-  // Approximate UTC date matching the SLT components
-  const utcGuess = Date.UTC(year, month, day, targetHours, targetMinutes, 0);
 
-  // Calculate actual current PST/PDT offset in milliseconds
-  const laString = now.toLocaleString('en-US', { timeZone: 'America/Los_Angeles' });
-  const utcString = now.toLocaleString('en-US', { timeZone: 'UTC' });
-  const offsetMs = new Date(laString).getTime() - new Date(utcString).getTime();
+@bot.event
+async def on_message(message):
+    if message.author.bot:
+        return
 
-  // Subtract offset to get exact UTC time for the SLT target
-  const finalTimestampMs = utcGuess - offsetMs;
-  return Math.floor(finalTimestampMs / 1000);
-}
+    # Check if the message contains SLT (case-insensitive)
+    if "slt" not in message.content.lower():
+        return
 
-client.on('messageCreate', async (message) => {
-  try {
-    // Ignore messages sent by bots
-    if (message.author.bot) return;
+    now_slt = datetime.now(SLT_ZONE)
 
-    // 1. Remove all URLs so coordinates (e.g. /1803) in links are completely ignored
-    const cleanContent = message.content.replace(/https?:\/\/\S+/gi, '');
+    # 1. Remove all http/https URLs so region coordinates (like /1803) are stripped first
+    cleaned_text = re.sub(r"https?://\S+", "", message.content, flags=re.IGNORECASE)
 
-    // 2. Search for time expressions ending in SLT
-    const sltRegex = /\b(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\s*slt\b/gi;
-    const matches = [...cleanContent.matchAll(sltRegex)];
+    # 2. Normalize day abbreviations like 'Weds' or 'Wed'
+    cleaned_text = re.sub(r"\bweds?\b", "Wednesday", cleaned_text, flags=re.IGNORECASE)
 
-    if (matches.length === 0) return;
+    # 3. Remove 'slt' so dateparser doesn't get confused by the timezone label
+    cleaned_text = re.sub(r"\bslt\b", "", cleaned_text, flags=re.IGNORECASE)
 
-    const results = [];
+    # Search the cleaned message string for any date/time pattern
+    results = search_dates(
+        cleaned_text,
+        settings={
+            "RELATIVE_BASE": now_slt.replace(tzinfo=None),
+            "PREFER_DATES_FROM": "future",
+            "DATE_ORDER": "DMY",  # Ensures 5/09/2026 reads as 5th Sept, not May 9th
+        },
+    )
 
-    for (const match of matches) {
-      let hours = parseInt(match[1], 10);
-      const minutes = match[2] ? parseInt(match[2], 10) : 0;
-      const meridian = match[3] ? match[3].toLowerCase() : null;
+    if results:
+        converted_times = []
+        for text_match, parsed_dt in results:
+            # Avoid matching standalone single digits or non-time noise
+            if len(text_match.strip()) < 2 or text_match.strip().isdigit():
+                continue
 
-      // Convert 12-hour AM/PM to 24-hour format
-      if (meridian === 'pm' && hours < 12) hours += 12;
-      if (meridian === 'am' && hours === 12) hours = 0;
+            localized_slt = SLT_ZONE.localize(parsed_dt)
+            unix_timestamp = int(localized_slt.timestamp())
 
-      // Skip invalid hour/minute inputs
-      if (hours > 23 || minutes > 59) continue;
+            converted_times.append(
+                f"<t:{unix_timestamp}:F> (<t:{unix_timestamp}:R>)"
+            )
 
-      const unixTimestamp = parseSLTToUnix(hours, minutes);
+        if converted_times:
+            # Remove duplicates if any overlap
+            unique_times = list(dict.fromkeys(converted_times))
+            response = "**SLT Time Conversion:**\n" + "\n".join(unique_times)
+            await message.reply(response, mention_author=False)
 
-      if (!isNaN(unixTimestamp)) {
-        results.push(`<t:${unixTimestamp}:F> (<t:${unixTimestamp}:R>)`);
-      }
-    }
 
-    if (results.length > 0) {
-      await message.reply(`**SLT Time Conversion:**\n${results.join('\n')}`);
-    }
-  } catch (error) {
-    // Log error to Railway console without stopping the bot process
-    console.error('Error processing SLT message:', error);
-  }
-});
-
-client.login(process.env.DISCORD_TOKEN);
+TOKEN = os.getenv("DISCORD_TOKEN")
+if TOKEN:
+    bot.run(TOKEN)
