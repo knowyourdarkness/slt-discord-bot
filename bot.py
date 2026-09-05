@@ -9,45 +9,70 @@ const client = new Client({
 });
 
 client.on('messageCreate', async (message) => {
-  // Ignore messages sent by bots (including itself)
-  if (message.author.bot) return;
+  try {
+    // Ignore messages sent by bots (including itself)
+    if (message.author.bot) return;
 
-  // 1. Remove all http/https URLs so coordinates in links are ignored
-  const cleanContent = message.content.replace(/https?:\/\/\S+/gi, '');
+    // 1. Remove all http/https URLs so coordinates in links are ignored
+    const cleanContent = message.content.replace(/https?:\/\/\S+/gi, '');
 
-  // 2. Match time formats followed by SLT (e.g., "1:30pm SLT", "1:30 pm SLT", "13:30 SLT")
-  const sltRegex = /\b(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\s*slt\b/gi;
-  const matches = [...cleanContent.matchAll(sltRegex)];
+    // 2. Match time formats followed by SLT (e.g., "1:30pm SLT", "1:30 pm SLT", "13:30 SLT")
+    const sltRegex = /\b(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\s*slt\b/gi;
+    const matches = [...cleanContent.matchAll(sltRegex)];
 
-  if (matches.length === 0) return;
+    if (matches.length === 0) return;
 
-  const results = [];
+    const results = [];
 
-  for (const match of matches) {
-    let hours = parseInt(match[1], 10);
-    const minutes = match[2] ? parseInt(match[2], 10) : 0;
-    const meridian = match[3] ? match[3].toLowerCase() : null;
+    for (const match of matches) {
+      let hours = parseInt(match[1], 10);
+      const minutes = match[2] ? parseInt(match[2], 10) : 0;
+      const meridian = match[3] ? match[3].toLowerCase() : null;
 
-    // Handle 12-hour AM/PM conversions
-    if (meridian === 'pm' && hours < 12) hours += 12;
-    if (meridian === 'am' && hours === 12) hours = 0;
+      // Handle 12-hour AM/PM conversions
+      if (meridian === 'pm' && hours < 12) hours += 12;
+      if (meridian === 'am' && hours === 12) hours = 0;
 
-    // Build the target time in Pacific Time (SLT)
-    // Note: SLT follows America/Los_Angeles (PST/PDT)
-    const now = new Date();
-    const sltDateString = new Date().toLocaleDateString('en-US', { timeZone: 'America/Los_Angeles' });
-    const sltDateTime = new Date(`${sltDateString} ${hours}:${minutes}:00`);
+      // Guard against invalid hour/minute inputs
+      if (hours > 23 || minutes > 59) continue;
 
-    // Convert to Unix timestamp in seconds for Discord's native relative timestamp tag
-    const unixTimestamp = Math.floor(sltDateTime.getTime() / 1000);
+      // Calculate SLT offset directly using built-in JavaScript Intl (no external packages)
+      const now = new Date();
+      
+      // Get SLT date parts (PST/PDT)
+      const sltParts = new Intl.DateTimeFormat('en-US', {
+        timeZone: 'America/Los_Angeles',
+        year: 'numeric',
+        month: 'numeric',
+        day: 'numeric',
+        hour12: false
+      }).formatToParts(now);
 
-    // Format as Discord dynamic timestamps (<t:UNIX:F> for full date, <t:UNIX:R> for relative)
-    results.push(`<t:${unixTimestamp}:F> (<t:${unixTimestamp}:R>)`);
-  }
+      const partMap = {};
+      sltParts.forEach(p => { if (p.type !== 'literal') partMap[p.type] = parseInt(p.value, 10); });
 
-  if (results.length > 0) {
-    await message.reply(`**SLT Time Conversion:**\n${results.join('\n')}`);
+      // Find current SLT UTC offset in minutes
+      const sltString = `${partMap.year}-${String(partMap.month).padStart(2,'0')}-${String(partMap.day).padStart(2,'0')}T${String(hours).padStart(2,'0')}:${String(minutes).padStart(2,'0')}:00`;
+      
+      // Create date safely in UTC first, then adjust for SLT target time
+      const sltTarget = new Date(Date.UTC(partMap.year, partMap.month - 1, partMap.day, hours, minutes));
+      
+      // Get target Unix timestamp in seconds
+      const unixTimestamp = Math.floor(sltTarget.getTime() / 1000);
+
+      // Verify the timestamp is valid before pushing
+      if (!isNaN(unixTimestamp)) {
+        results.push(`<t:${unixTimestamp}:F> (<t:${unixTimestamp}:R>)`);
+      }
+    }
+
+    if (results.length > 0) {
+      await message.reply(`**SLT Time Conversion:**\n${results.join('\n')}`);
+    }
+  } catch (error) {
+    // Catch errors so Railway worker doesn't crash
+    console.error('Bot runtime error:', error);
   }
 });
 
-client.login('YOUR_DISCORD_BOT_TOKEN');
+client.login(process.env.DISCORD_TOKEN);
