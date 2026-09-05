@@ -1,73 +1,53 @@
-import os
-import re
-from datetime import datetime
-from dateparser.search import search_dates
-import discord
-import pytz
+const { Client, GatewayIntentBits } = require('discord.js');
 
-intents = discord.Intents.default()
-intents.message_content = True
-bot = discord.Client(intents=intents)
+const client = new Client({
+  intents: [
+    GatewayIntentBits.Guilds,
+    GatewayIntentBits.GuildMessages,
+    GatewayIntentBits.MessageContent,
+  ],
+});
 
-SLT_ZONE = pytz.timezone("America/Los_Angeles")
+client.on('messageCreate', async (message) => {
+  // Ignore messages sent by bots (including itself)
+  if (message.author.bot) return;
 
+  // 1. Remove all http/https URLs so coordinates in links are ignored
+  const cleanContent = message.content.replace(/https?:\/\/\S+/gi, '');
 
-@bot.event
-async def on_ready():
-    print(f"Logged in as {bot.user} - SLT Converter is active!")
+  // 2. Match time formats followed by SLT (e.g., "1:30pm SLT", "1:30 pm SLT", "13:30 SLT")
+  const sltRegex = /\b(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\s*slt\b/gi;
+  const matches = [...cleanContent.matchAll(sltRegex)];
 
+  if (matches.length === 0) return;
 
-@bot.event
-async def on_message(message):
-    if message.author.bot:
-        return
+  const results = [];
 
-    # Check if the message contains SLT (case-insensitive)
-    if "slt" not in message.content.lower():
-        return
+  for (const match of matches) {
+    let hours = parseInt(match[1], 10);
+    const minutes = match[2] ? parseInt(match[2], 10) : 0;
+    const meridian = match[3] ? match[3].toLowerCase() : null;
 
-    now_slt = datetime.now(SLT_ZONE)
+    // Handle 12-hour AM/PM conversions
+    if (meridian === 'pm' && hours < 12) hours += 12;
+    if (meridian === 'am' && hours === 12) hours = 0;
 
-    # Clean the message text for better parsing
-    cleaned_text = message.content
+    // Build the target time in Pacific Time (SLT)
+    // Note: SLT follows America/Los_Angeles (PST/PDT)
+    const now = new Date();
+    const sltDateString = new Date().toLocaleDateString('en-US', { timeZone: 'America/Los_Angeles' });
+    const sltDateTime = new Date(`${sltDateString} ${hours}:${minutes}:00`);
 
-    # Normalize day abbreviations like 'Weds' or 'Wed'
-    cleaned_text = re.sub(r"\bweds?\b", "Wednesday", cleaned_text, flags=re.IGNORECASE)
+    // Convert to Unix timestamp in seconds for Discord's native relative timestamp tag
+    const unixTimestamp = Math.floor(sltDateTime.getTime() / 1000);
 
-    # Remove 'slt' so dateparser doesn't get confused by the timezone label
-    cleaned_text = re.sub(r"\bslt\b", "", cleaned_text, flags=re.IGNORECASE)
+    // Format as Discord dynamic timestamps (<t:UNIX:F> for full date, <t:UNIX:R> for relative)
+    results.push(`<t:${unixTimestamp}:F> (<t:${unixTimestamp}:R>)`);
+  }
 
-    # Search the entire message string for any date/time pattern in any format
-    results = search_dates(
-        cleaned_text,
-        settings={
-            "RELATIVE_BASE": now_slt.replace(tzinfo=None),
-            "PREFER_DATES_FROM": "future",
-            "DATE_ORDER": "DMY",  # Ensures 5/09/2026 reads as 5th Sept, not May 9th
-        },
-    )
+  if (results.length > 0) {
+    await message.reply(`**SLT Time Conversion:**\n${results.join('\n')}`);
+  }
+});
 
-    if results:
-        converted_times = []
-        for text_match, parsed_dt in results:
-            # Avoid matching standalone single digits or non-time noise
-            if len(text_match.strip()) < 2 or text_match.strip().isdigit():
-                continue
-
-            localized_slt = SLT_ZONE.localize(parsed_dt)
-            unix_timestamp = int(localized_slt.timestamp())
-
-            converted_times.append(
-                f"<t:{unix_timestamp}:F> (<t:{unix_timestamp}:R>)"
-            )
-
-        if converted_times:
-            # Remove duplicates if any overlap
-            unique_times = list(dict.fromkeys(converted_times))
-            response = "**SLT Time Conversion:**\n" + "\n".join(unique_times)
-            await message.reply(response, mention_author=False)
-
-
-TOKEN = os.getenv("DISCORD_TOKEN")
-if TOKEN:
-    bot.run(TOKEN)
+client.login('YOUR_DISCORD_BOT_TOKEN');
