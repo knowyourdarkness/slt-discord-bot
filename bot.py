@@ -8,15 +8,52 @@ const client = new Client({
   ],
 });
 
+// Helper function to safely parse SLT time into a Unix timestamp
+function parseSLTToUnix(targetHours, targetMinutes) {
+  const now = new Date();
+  
+  // Format current date in America/Los_Angeles timezone
+  const formatter = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/Los_Angeles',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false,
+  });
+
+  const parts = Object.fromEntries(
+    formatter.formatToParts(now).map((p) => [p.type, p.value])
+  );
+
+  const year = parseInt(parts.year, 10);
+  const month = parseInt(parts.month, 10) - 1;
+  const day = parseInt(parts.day, 10);
+
+  // Approximate UTC date matching the SLT components
+  const utcGuess = Date.UTC(year, month, day, targetHours, targetMinutes, 0);
+
+  // Calculate actual current PST/PDT offset in milliseconds
+  const laString = now.toLocaleString('en-US', { timeZone: 'America/Los_Angeles' });
+  const utcString = now.toLocaleString('en-US', { timeZone: 'UTC' });
+  const offsetMs = new Date(laString).getTime() - new Date(utcString).getTime();
+
+  // Subtract offset to get exact UTC time for the SLT target
+  const finalTimestampMs = utcGuess - offsetMs;
+  return Math.floor(finalTimestampMs / 1000);
+}
+
 client.on('messageCreate', async (message) => {
   try {
-    // Ignore messages sent by bots (including itself)
+    // Ignore messages sent by bots
     if (message.author.bot) return;
 
-    // 1. Remove all http/https URLs so coordinates in links are ignored
+    // 1. Remove all URLs so coordinates (e.g. /1803) in links are completely ignored
     const cleanContent = message.content.replace(/https?:\/\/\S+/gi, '');
 
-    // 2. Match time formats followed by SLT (e.g., "1:30pm SLT", "1:30 pm SLT", "13:30 SLT")
+    // 2. Search for time expressions ending in SLT
     const sltRegex = /\b(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\s*slt\b/gi;
     const matches = [...cleanContent.matchAll(sltRegex)];
 
@@ -29,38 +66,15 @@ client.on('messageCreate', async (message) => {
       const minutes = match[2] ? parseInt(match[2], 10) : 0;
       const meridian = match[3] ? match[3].toLowerCase() : null;
 
-      // Handle 12-hour AM/PM conversions
+      // Convert 12-hour AM/PM to 24-hour format
       if (meridian === 'pm' && hours < 12) hours += 12;
       if (meridian === 'am' && hours === 12) hours = 0;
 
-      // Guard against invalid hour/minute inputs
+      // Skip invalid hour/minute inputs
       if (hours > 23 || minutes > 59) continue;
 
-      // Calculate SLT offset directly using built-in JavaScript Intl (no external packages)
-      const now = new Date();
-      
-      // Get SLT date parts (PST/PDT)
-      const sltParts = new Intl.DateTimeFormat('en-US', {
-        timeZone: 'America/Los_Angeles',
-        year: 'numeric',
-        month: 'numeric',
-        day: 'numeric',
-        hour12: false
-      }).formatToParts(now);
+      const unixTimestamp = parseSLTToUnix(hours, minutes);
 
-      const partMap = {};
-      sltParts.forEach(p => { if (p.type !== 'literal') partMap[p.type] = parseInt(p.value, 10); });
-
-      // Find current SLT UTC offset in minutes
-      const sltString = `${partMap.year}-${String(partMap.month).padStart(2,'0')}-${String(partMap.day).padStart(2,'0')}T${String(hours).padStart(2,'0')}:${String(minutes).padStart(2,'0')}:00`;
-      
-      // Create date safely in UTC first, then adjust for SLT target time
-      const sltTarget = new Date(Date.UTC(partMap.year, partMap.month - 1, partMap.day, hours, minutes));
-      
-      // Get target Unix timestamp in seconds
-      const unixTimestamp = Math.floor(sltTarget.getTime() / 1000);
-
-      // Verify the timestamp is valid before pushing
       if (!isNaN(unixTimestamp)) {
         results.push(`<t:${unixTimestamp}:F> (<t:${unixTimestamp}:R>)`);
       }
@@ -70,8 +84,8 @@ client.on('messageCreate', async (message) => {
       await message.reply(`**SLT Time Conversion:**\n${results.join('\n')}`);
     }
   } catch (error) {
-    // Catch errors so Railway worker doesn't crash
-    console.error('Bot runtime error:', error);
+    // Log error to Railway console without stopping the bot process
+    console.error('Error processing SLT message:', error);
   }
 });
 
